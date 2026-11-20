@@ -1370,6 +1370,11 @@ def generate_episode(
                     provenance_log, truth_issues, step_counter,
                 )
 
+    # ── Shuffle records so injected errors are NOT clustered at the end ──
+    rng.shuffle(ledger)
+    rng.shuffle(invoices)
+    rng.shuffle(payments)
+
     # ── Manifest ─────────────────────────────────────────────────────
     manifest = Manifest(
         schema_version=_SCHEMA_VERSION,
