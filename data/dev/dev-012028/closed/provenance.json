@@ -1,0 +1,20 @@
+[
+  {
+    "step": 1,
+    "action": "inject_compound_fx_cutoff",
+    "target_ids": [
+      "INV-0043",
+      "PAY-0047"
+    ],
+    "description": "Compound: partial payment (73%) in EUR at period boundary with wrong FX date (2026-06-25 instead of 2026-06-24)"
+  },
+  {
+    "step": 2,
+    "action": "inject_compound_duplicate_split",
+    "target_ids": [
+      "INV-0044",
+      "INV-0045"
+    ],
+    "description": "Compound: duplicate invoice INV-0045 of INV-0044 partially hidden by split payment pattern on original"
+  }
+]

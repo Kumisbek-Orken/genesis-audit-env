@@ -1,0 +1,46 @@
+[
+  {
+    "issue_id": "ISS-0001",
+    "type": "unallocated_or_partial_payment",
+    "affected_ids": [
+      "INV-0040",
+      "PAY-0046"
+    ],
+    "expected_amount_minor": 126673,
+    "currency": "CHF",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0085",
+        "DOC-0086"
+      ],
+      [
+        "DOC-0085",
+        "DOC-0086",
+        "ROW-0175",
+        "ROW-0176"
+      ]
+    ]
+  },
+  {
+    "issue_id": "ISS-0002",
+    "type": "duplicate_invoice",
+    "affected_ids": [
+      "INV-0041",
+      "INV-0042"
+    ],
+    "expected_amount_minor": 63313,
+    "currency": "USD",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0087",
+        "DOC-0088"
+      ],
+      [
+        "DOC-0087",
+        "DOC-0088",
+        "ROW-0179",
+        "ROW-0180"
+      ]
+    ]
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "step": 1,
+    "action": "inject_wrong_fx_date_or_rate",
+    "target_ids": [
+      "INV-0011",
+      "PAY-0049"
+    ],
+    "description": "Used FX rate from 2026-03-15 instead of 2026-03-17 for INV-0011, discrepancy=101126 EUR"
+  },
+  {
+    "step": 2,
+    "action": "inject_unallocated_or_partial_payment",
+    "target_ids": [
+      "INV-0010",
+      "PAY-0050"
+    ],
+    "description": "Partial payment PAY-0050 of 219418 for invoice INV-0010 (total 421959), shortfall 202541"
+  },
+  {
+    "step": 3,
+    "action": "inject_duplicate_invoice",
+    "target_ids": [
+      "INV-0021",
+      "INV-0042"
+    ],
+    "description": "Duplicated INV-0021 as INV-0042"
+  }
+]

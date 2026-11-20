@@ -1,0 +1,29 @@
+[
+  {
+    "step": 1,
+    "action": "inject_wrong_fx_date_or_rate",
+    "target_ids": [
+      "INV-0011",
+      "PAY-0049"
+    ],
+    "description": "Used FX rate from 2026-06-15 instead of 2026-06-20 for INV-0011, discrepancy=201439 GBP"
+  },
+  {
+    "step": 2,
+    "action": "inject_unallocated_or_partial_payment",
+    "target_ids": [
+      "INV-0011",
+      "PAY-0050"
+    ],
+    "description": "Partial payment PAY-0050 of 129517 for invoice INV-0011 (total 177421), shortfall 47904"
+  },
+  {
+    "step": 3,
+    "action": "inject_duplicate_invoice",
+    "target_ids": [
+      "INV-0005",
+      "INV-0045"
+    ],
+    "description": "Duplicated INV-0005 as INV-0045"
+  }
+]

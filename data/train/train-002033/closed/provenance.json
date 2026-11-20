@@ -1,0 +1,29 @@
+[
+  {
+    "step": 1,
+    "action": "inject_compound_fx_cutoff",
+    "target_ids": [
+      "INV-0042",
+      "PAY-0047"
+    ],
+    "description": "Compound: partial payment (68%) in KZT at period boundary with wrong FX date (2026-06-28 instead of 2026-06-28)"
+  },
+  {
+    "step": 2,
+    "action": "inject_compound_duplicate_split",
+    "target_ids": [
+      "INV-0043",
+      "INV-0044"
+    ],
+    "description": "Compound: duplicate invoice INV-0044 of INV-0043 partially hidden by split payment pattern on original"
+  },
+  {
+    "step": 3,
+    "action": "inject_duplicate_invoice",
+    "target_ids": [
+      "INV-0031",
+      "INV-0045"
+    ],
+    "description": "Duplicated INV-0031 as INV-0045"
+  }
+]

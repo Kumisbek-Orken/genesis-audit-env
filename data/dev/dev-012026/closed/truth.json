@@ -1,0 +1,46 @@
+[
+  {
+    "issue_id": "ISS-0001",
+    "type": "duplicate_invoice",
+    "affected_ids": [
+      "INV-0023",
+      "INV-0042"
+    ],
+    "expected_amount_minor": 140429,
+    "currency": "GBP",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0047",
+        "DOC-0089"
+      ],
+      [
+        "DOC-0047",
+        "DOC-0089",
+        "ROW-0189",
+        "ROW-0190"
+      ]
+    ]
+  },
+  {
+    "issue_id": "ISS-0002",
+    "type": "unallocated_or_partial_payment",
+    "affected_ids": [
+      "INV-0017",
+      "PAY-0048"
+    ],
+    "expected_amount_minor": 87015,
+    "currency": "GBP",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0033",
+        "DOC-0090"
+      ],
+      [
+        "DOC-0033",
+        "DOC-0090",
+        "ROW-0191",
+        "ROW-0192"
+      ]
+    ]
+  }
+]

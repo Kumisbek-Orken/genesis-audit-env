@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "episode_id": "train-002035",
+  "base_currency": "EUR",
+  "period_start": "2026-01-01T00:00:00+05:00",
+  "period_end": "2026-06-28T23:59:00+05:00",
+  "timezone": "Asia/Almaty",
+  "num_records": 188,
+  "num_documents": 89,
+  "rounding_rule": "ROUND_HALF_EVEN"
+}

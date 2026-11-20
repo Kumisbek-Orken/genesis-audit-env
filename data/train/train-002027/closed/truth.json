@@ -1,0 +1,68 @@
+[
+  {
+    "issue_id": "ISS-0001",
+    "type": "duplicate_invoice",
+    "affected_ids": [
+      "INV-0044",
+      "INV-0046"
+    ],
+    "expected_amount_minor": 50000,
+    "currency": "USD",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0092",
+        "DOC-0096"
+      ],
+      [
+        "DOC-0092",
+        "DOC-0096",
+        "ROW-0195",
+        "ROW-0196"
+      ]
+    ]
+  },
+  {
+    "issue_id": "ISS-0002",
+    "type": "unallocated_or_partial_payment",
+    "affected_ids": [
+      "INV-0036",
+      "PAY-0051"
+    ],
+    "expected_amount_minor": 31500,
+    "currency": "USD",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0076",
+        "DOC-0097"
+      ],
+      [
+        "DOC-0076",
+        "DOC-0097",
+        "ROW-0197",
+        "ROW-0198"
+      ]
+    ]
+  },
+  {
+    "issue_id": "ISS-0003",
+    "type": "wrong_fx_date_or_rate",
+    "affected_ids": [
+      "INV-0020",
+      "PAY-0052"
+    ],
+    "expected_amount_minor": 286011,
+    "currency": "USD",
+    "acceptable_evidence_sets": [
+      [
+        "DOC-0039",
+        "DOC-0098"
+      ],
+      [
+        "DOC-0039",
+        "DOC-0098",
+        "ROW-0199",
+        "ROW-0200"
+      ]
+    ]
+  }
+]

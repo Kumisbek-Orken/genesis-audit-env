@@ -1,0 +1,6 @@
+{
+  "fx_date_rule": "invoice_date",
+  "period_boundary": "inclusive_start_exclusive_end",
+  "rounding": "ROUND_HALF_EVEN",
+  "amount_tolerance_minor": 100
+}

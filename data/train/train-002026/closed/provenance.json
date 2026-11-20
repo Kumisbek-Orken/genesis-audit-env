@@ -1,0 +1,20 @@
+[
+  {
+    "step": 1,
+    "action": "inject_duplicate_invoice",
+    "target_ids": [
+      "INV-0008",
+      "INV-0044"
+    ],
+    "description": "Duplicated INV-0008 as INV-0044"
+  },
+  {
+    "step": 2,
+    "action": "inject_unallocated_or_partial_payment",
+    "target_ids": [
+      "INV-0043",
+      "PAY-0051"
+    ],
+    "description": "Partial payment PAY-0051 of 54750 for invoice INV-0043 (total 75000), shortfall 20250"
+  }
+]
