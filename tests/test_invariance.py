@@ -53,7 +53,14 @@ def _build_id_map(episode: EpisodeData, rng: random.Random) -> dict[str, str]:
     sorted_ids = sorted(all_ids)
     shuffled = sorted_ids[:]
     rng.shuffle(shuffled)
-    return {old: f"X-{i:05d}" for i, old in enumerate(sorted_ids)}
+    while len(shuffled) >= 3 and shuffled == sorted_ids:
+        rng.shuffle(shuffled)
+
+    id_map = {old: f"X-{i:05d}" for i, old in enumerate(shuffled)}
+    if len(sorted_ids) >= 3:
+        renamed_order = sorted(sorted_ids, key=id_map.__getitem__)
+        assert renamed_order != sorted_ids, "ID renaming must change relative order"
+    return id_map
 
 
 def _remap(value: str | None, m: dict[str, str]) -> str | None:

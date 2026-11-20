@@ -3,7 +3,8 @@
 
 Loads all saved episodes from a directory via ``load_episode``, runs all four
 baseline policies from ``audit_env.policies`` through ``run_episode``, prints
-a summary metrics table to stdout, and writes full trajectories to a JSONL file.
+a summary metrics table to stdout, and writes non-Oracle public trajectories
+to JSONL. Oracle trajectories are written separately only when requested.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import argparse
 import json
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -123,10 +125,11 @@ def _format_summary_table(rows: list[dict[str, Any]]) -> str:
 def evaluate_episodes(
     episode_entries: list[tuple[Path, EpisodeData]],
     out_file: Path,
+    oracle_out_file: Path | None = None,
     seed: int = 0,
     eval_mode: bool = True,
 ) -> list[dict[str, Any]]:
-    """Run all 4 policies over *episode_entries* and write trajectories to *out_file*."""
+    """Run all policies, keeping Oracle trajectories out of the public output."""
     policy_specs: list[tuple[str, Callable[[int, EpisodeData], Any]]] = [
         ("RandomPolicy", lambda ep_idx, _ep: RandomPolicy(seed=seed + ep_idx)),
         ("WeakHeuristicPolicy", lambda _ep_idx, _ep: WeakHeuristicPolicy()),
@@ -135,9 +138,15 @@ def evaluate_episodes(
     ]
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
+    if oracle_out_file is not None:
+        oracle_out_file.parent.mkdir(parents=True, exist_ok=True)
     agg: dict[str, list[dict[str, Any]]] = {name: [] for name, _ in policy_specs}
 
-    with open(out_file, "w", encoding="utf-8") as fh:
+    with open(out_file, "w", encoding="utf-8") as fh, (
+        open(oracle_out_file, "w", encoding="utf-8")
+        if oracle_out_file is not None
+        else nullcontext(None)
+    ) as oracle_fh:
         for ep_idx, (ep_dir, ep_data) in enumerate(episode_entries):
             for policy_name, policy_factory in policy_specs:
                 env = AuditEnv(eval_mode=eval_mode)
@@ -160,7 +169,11 @@ def evaluate_episodes(
                     elapsed_sec=elapsed,
                     episode_dir=ep_dir,
                 )
-                fh.write(json.dumps(record) + "\n")
+                if policy_name == "OraclePolicy":
+                    if oracle_fh is not None:
+                        oracle_fh.write(json.dumps(record) + "\n")
+                else:
+                    fh.write(json.dumps(record) + "\n")
 
                 agg[policy_name].append({
                     "f1": float(eval_result["f1"]),
@@ -191,7 +204,10 @@ def evaluate_episodes(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate all 4 baseline policies on saved episodes and export trajectories."
+        description=(
+            "Evaluate all 4 baseline policies; export non-Oracle trajectories "
+            "publicly and Oracle trajectories only when requested."
+        )
     )
     parser.add_argument(
         "--episodes-dir",
@@ -211,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output JSONL path for recorded trajectories (default: trajectories.jsonl).",
     )
     parser.add_argument(
+        "--oracle-out",
+        type=Path,
+        default=None,
+        help="Optional evaluator-only JSONL output path for OraclePolicy trajectories.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -228,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.oracle_out is not None and args.oracle_out.resolve() == args.out_file.resolve():
+        parser.error("--oracle-out must be a different path from --out.")
+
     ep_dirs = discover_episode_dirs(args.episodes_dir)
     if not ep_dirs:
         print(
@@ -240,15 +265,21 @@ def main(argv: list[str] | None = None) -> int:
     summary_rows = evaluate_episodes(
         episode_entries=episode_entries,
         out_file=args.out_file,
+        oracle_out_file=args.oracle_out,
         seed=args.seed,
         eval_mode=not args.open_mode,
     )
 
     print(_format_summary_table(summary_rows))
     print(
-        f"\nSaved {len(episode_entries) * 4} trajectories "
-        f"({len(episode_entries)} episodes x 4 policies) to {args.out_file}"
+        f"\nSaved {len(episode_entries) * 3} public trajectories "
+        f"({len(episode_entries)} episodes x 3 non-Oracle policies) to {args.out_file}"
     )
+    if args.oracle_out is not None:
+        print(
+            f"Saved {len(episode_entries)} evaluator-only OraclePolicy trajectories "
+            f"to {args.oracle_out}"
+        )
     return 0
 
 

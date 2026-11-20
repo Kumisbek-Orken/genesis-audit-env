@@ -11,11 +11,11 @@
   - `calculator.py` — безопасный AST-калькулятор для арифметических выражений.
   - `generator.py` — каузальный генератор сбалансированной истории и инъекции 4 типов ошибок, 2 составных сценариев и законных distractors (`generate_episode`, `save_episode`, `load_episode`).
   - `matcher.py` — детерминированное жадное 1-к-1 сопоставление и расчёт P / R / F1 / награды.
-  - `env.py` — среда `AuditEnv` с контрактом `reset()` / `step()`, лимитом 100 шагов, пагинацией `<= 50` и изоляцией эталона.
+  - `env.py` — среда `AuditEnv` с контрактом `reset()` / `step()`, лимитом 100 шагов, пагинацией `<= 50` и изоляцией наблюдений от эталона внутри процесса.
   - `policies.py` — 4 базовые политики (`RandomPolicy`, `WeakHeuristicPolicy`, `StrongBaselinePolicy`, `OraclePolicy`) и единый драйвер `run_episode`.
 - `scripts/` — воспроизводимые CLI-скрипты:
   - `generate_data.py` — детерминированная генерация наборов эпизодов (включая split `train` / `dev`).
-  - `run_eval.py` — прогон всех 4 политик на сохранённых эпизодах, печать таблицы метрик и экспорт `trajectories.jsonl`.
+  - `run_eval.py` — прогон всех 4 политик на сохранённых эпизодах; экспортирует только 3 не-оракульные политики в публичный `trajectories.jsonl`, а Oracle — отдельно по `--oracle-out`.
 - `tests/` — автотесты контракта среды, схем, генератора, инвариантности, матчера, политик и CLI (177 тестов).
 - `DESIGN.md` — архитектурная записка (POMDP-постановка, каузальный генератор, защита от взлома награды, разбор метрик и ограничений).
 - `Dockerfile` — автономный оффлайн-образ на базе `python:3.11-slim`.
@@ -40,13 +40,17 @@ python3 -m pytest -v --tb=short
 python3 scripts/generate_data.py --out-dir data --num-episodes 10 --seed 100 --splits train dev
 ```
 
-Оценка всех 4 политик на `dev`-наборе и запись траекторий в `trajectories.jsonl`:
+Оценка всех 4 политик на `dev`-наборе (включая Oracle для верхней границы в таблице stdout); в публичный `trajectories.jsonl` записываются только не-оракульные траектории:
 
 ```bash
 python3 scripts/run_eval.py --episodes-dir data/dev --out trajectories.jsonl
 ```
 
+На стандартном `data/dev` файл содержит 30 траекторий: 10 dev-эпизодов × 3 политики (`RandomPolicy`, `WeakHeuristicPolicy`, `StrongBaselinePolicy`). Ответы Oracle в этот обучающий файл не попадают. Если нужен отдельный файл для evaluator-only анализа, передайте `--oracle-out oracle.jsonl`.
+
 ### Результаты оценки базовых политик на `data/dev`
+
+Таблица включает Oracle, поскольку эта политика запускается оценщиком; её траектории не включены в публичный файл.
 
 | Policy | Episodes | Mean F1 | Precision | Recall | Mean Reward | Mean Steps | Mean Time(s) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -54,6 +58,8 @@ python3 scripts/run_eval.py --episodes-dir data/dev --out trajectories.jsonl
 | `WeakHeuristicPolicy` | 10 | 0.1669 | 0.1094 | 0.3667 | -0.6711 | 3.00 | 0.0083 |
 | `StrongBaselinePolicy` | 10 | 0.6271 | 0.7333 | 0.5667 | +0.2241 | 15.10 | 0.0092 |
 | `OraclePolicy` | 10 | 1.0000 | 1.0000 | 1.0000 | +0.9980 | 1.00 | 0.0081 |
+
+Контракт API изолирует `observation` от объекта среды и эталона внутри процесса, но сам по себе не является песочницей для произвольного недоверенного кода агента. Изоляция файловой системы и процесса от такого кода должна обеспечиваться контейнером или рантаймом оценщика.
 
 ## Запуск в Docker (без доступа к сети)
 

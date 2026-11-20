@@ -77,7 +77,7 @@ def test_generate_data_cli_deterministic(tmp_path: Path) -> None:
         assert (dir_a / name / "closed" / "truth.json").read_text() == (dir_b / name / "closed" / "truth.json").read_text()
 
 def test_run_eval_cli_outputs_table_and_valid_jsonl(tmp_path: Path) -> None:
-    """scripts/run_eval.py prints summary table and writes valid JSONL trajectories without truth leaks."""
+    """Public trajectories include only non-Oracle policies and contain no reference fields."""
     ep_dir = tmp_path / "episodes"
     traj_path = tmp_path / "trajectories.jsonl"
 
@@ -119,14 +119,25 @@ def test_run_eval_cli_outputs_table_and_valid_jsonl(tmp_path: Path) -> None:
         assert expected in stdout, f"Missing '{expected}' in stdout:\n{stdout}"
 
     lines = [ln for ln in traj_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert len(lines) == 12
+    assert len(lines) == 9
+    public_policies = set()
 
     for line in lines:
         rec = json.loads(line)
+        public_policies.add(rec["policy"])
+        assert rec["policy"] != "OraclePolicy"
         for key in ("episode_id", "policy", "num_steps", "total_reward", "metrics", "steps"):
             assert key in rec
         assert rec["num_steps"] == len(rec["steps"])
         assert 1 <= rec["num_steps"] <= 100
+        serialized = json.dumps(rec)
+        for forbidden in (
+            '"truth_issues"',
+            '"expected_amount_minor"',
+            '"acceptable_evidence_sets"',
+            '"provenance"',
+        ):
+            assert forbidden not in serialized
 
         for step_rec in rec["steps"]:
             for sk in ("step", "action", "observation", "reward", "terminated", "truncated"):
@@ -136,11 +147,29 @@ def test_run_eval_cli_outputs_table_and_valid_jsonl(tmp_path: Path) -> None:
             assert "acceptable_evidence_sets" not in obs_dump
             assert "provenance" not in obs_dump
 
+    assert public_policies == {
+        "RandomPolicy",
+        "WeakHeuristicPolicy",
+        "StrongBaselinePolicy",
+    }
+
+    same_path_res = _run_cli(
+        _EVAL_SCRIPT,
+        [
+            "--episodes-dir", str(ep_dir),
+            "--out", str(traj_path),
+            "--oracle-out", str(traj_path),
+        ],
+    )
+    assert same_path_res.returncode != 0
+    assert "--oracle-out must be a different path from --out" in same_path_res.stderr
+
 
 def test_run_eval_cli_monotonicity(tmp_path: Path) -> None:
-    """In saved trajectories, OraclePolicy achieves F1 == 1.0 and StrongBaselinePolicy beats RandomPolicy."""
+    """Oracle metrics are available separately while public scores remain monotonic."""
     ep_dir = tmp_path / "episodes"
     traj_path = tmp_path / "trajectories.jsonl"
+    oracle_path = tmp_path / "oracle.jsonl"
 
     gen_res = _run_cli(
         _GEN_SCRIPT,
@@ -158,32 +187,42 @@ def test_run_eval_cli_monotonicity(tmp_path: Path) -> None:
         [
             "--episodes-dir", str(ep_dir),
             "--out", str(traj_path),
+            "--oracle-out", str(oracle_path),
             "--seed", "0",
         ],
     )
     assert eval_res.returncode == 0, f"run_eval failed: {eval_res.stderr}"
 
-    by_policy: dict[str, list[dict]] = {}
-    for line in traj_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        rec = json.loads(line)
-        by_policy.setdefault(rec["policy"], []).append(rec)
-
-    assert set(by_policy.keys()) == {
+    public_records = [
+        json.loads(line)
+        for line in traj_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert {rec["policy"] for rec in public_records} == {
         "RandomPolicy",
         "WeakHeuristicPolicy",
         "StrongBaselinePolicy",
-        "OraclePolicy",
     }
+    oracle_records = [
+        json.loads(line)
+        for line in oracle_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(oracle_records) == 4
+    assert all(rec["policy"] == "OraclePolicy" for rec in oracle_records)
+    assert all(rec["metrics"]["f1"] == pytest.approx(1.0) for rec in oracle_records)
 
-    for oracle_rec in by_policy["OraclePolicy"]:
-        assert oracle_rec["metrics"]["f1"] == pytest.approx(1.0)
-
-    mean_f1_strong = sum(r["metrics"]["f1"] for r in by_policy["StrongBaselinePolicy"]) / len(by_policy["StrongBaselinePolicy"])
-    mean_f1_random = sum(r["metrics"]["f1"] for r in by_policy["RandomPolicy"]) / len(by_policy["RandomPolicy"])
-    assert mean_f1_strong > mean_f1_random, (
-        f"Expected StrongBaselinePolicy ({mean_f1_strong:.4f}) > RandomPolicy ({mean_f1_random:.4f})"
-    )
+    mean_f1_by_policy = {}
+    for line in eval_res.stdout.splitlines():
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) >= 3 and cells[0] in {
+            "RandomPolicy",
+            "StrongBaselinePolicy",
+            "OraclePolicy",
+        }:
+            mean_f1_by_policy[cells[0]] = float(cells[2])
+    assert mean_f1_by_policy["OraclePolicy"] == pytest.approx(1.0)
+    assert mean_f1_by_policy["OraclePolicy"] > mean_f1_by_policy["StrongBaselinePolicy"]
+    assert mean_f1_by_policy["StrongBaselinePolicy"] > mean_f1_by_policy["RandomPolicy"]
 
 

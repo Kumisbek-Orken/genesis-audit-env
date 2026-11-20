@@ -24,6 +24,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from decimal import Decimal, ROUND_HALF_EVEN
 from pathlib import Path
 
 import pytest
@@ -291,81 +292,171 @@ def test_save_episode_file_structure(tmp_path: Path):
 
 def test_independent_verification_via_env_tools():
     """Verify that affected_ids and evidence sets for all error types, compound scenarios,
-    and clean books can be independently fetched and verified solely via open AuditEnv tools."""
+    and clean books can be independently fetched and verified via open AuditEnv tools."""
     from audit_env.env import AuditEnv
 
-    # 1. Clean books verification
-    env_clean = AuditEnv(eval_mode=True)
-    clean_ep = generate_episode(seed=999, config={"num_errors": 0})
-    obs, info = env_clean.reset(episode_data=clean_ep)
-    assert len(clean_ep.truth_issues) == 0
-    ledger_obs, _, _, _, _ = env_clean.step({"tool": "list_records", "table": "ledger", "cursor": 0, "limit": 50})
-    assert ledger_obs["type"] == "list_records"
-    assert len(ledger_obs["records"]) > 0
-
-    # 2. Episode with all 4 error types and compound scenarios
-    env_err = AuditEnv(eval_mode=True)
-    err_ep = generate_episode(seed=42, config={"num_errors": 8, "include_compound": True})
-    obs, info = env_err.reset(episode_data=err_ep)
-    assert len(err_ep.truth_issues) > 0
-
     types_seen = set()
+    verified_cross_currency_partial = False
 
-    for issue in err_ep.truth_issues:
-        types_seen.add(issue.type)
-        # Verify all affected_ids can be retrieved
-        for aid in issue.affected_ids:
-            if aid.startswith("INV-"):
-                res, _, _, _, _ = env_err.step({"tool": "get_record", "table": "invoices", "id": aid})
-                assert res["type"] == "get_record", f"Failed fetching invoice {aid}"
-                assert res["record"]["invoice_id"] == aid
-            elif aid.startswith("PAY-"):
-                res, _, _, _, _ = env_err.step({"tool": "get_record", "table": "payments", "id": aid})
-                assert res["type"] == "get_record", f"Failed fetching payment {aid}"
-                assert res["record"]["payment_id"] == aid
+    def read_table(env, table: str) -> list[dict]:
+        records = []
+        cursor = 0
+        while True:
+            response, _, _, _, _ = env.step({
+                "tool": "list_records", "table": table, "cursor": cursor, "limit": 50,
+            })
+            assert response["type"] == "list_records"
+            records.extend(response["records"])
+            cursor = response["next_cursor"]
+            if cursor is None:
+                return records
 
-        # Verify at least one complete evidence set can be retrieved
-        assert len(issue.acceptable_evidence_sets) > 0
-        evidence_set_verified = False
+    cases = (
+        (14, {"num_errors": 8, "include_compound": True}),
+        (42, {"num_errors": 8, "include_compound": False}),
+        (999, {"num_errors": 0}),
+    )
+    for seed, config in cases:
+        env = AuditEnv(eval_mode=True)
+        episode = generate_episode(seed=seed, config=config)
+        obs, _ = env.reset(episode_data=episode)
+        assert obs["policy_summary"]["fx_date_rule"] == episode.policy.fx_date_rule
+        base_currency = obs["manifest"]["base_currency"]
 
-        for ev_set in issue.acceptable_evidence_sets:
-            ev_records = []
-            for eid in ev_set:
-                if eid.startswith("DOC-"):
-                    dres, _, _, _, _ = env_err.step({"tool": "get_document", "doc_id": eid})
-                    if dres.get("type") == "get_document" and dres.get("document"):
-                        ev_records.append(dres["document"])
-                elif eid.startswith("ROW-"):
-                    rres, _, _, _, _ = env_err.step({"tool": "get_record", "table": "ledger", "id": eid})
-                    if rres.get("type") == "get_record" and rres.get("record"):
-                        ev_records.append(rres["record"])
+        # Fetch all amounts and FX rates only through the public environment tools.
+        invoices = read_table(env, "invoices")
+        payments = read_table(env, "payments")
+        fx_rows = read_table(env, "fx_rates")
+        ledger = read_table(env, "ledger")
+        assert ledger
+        if config["num_errors"] == 0:
+            assert not episode.truth_issues
+            continue
 
-            if len(ev_records) == len(ev_set):
-                evidence_set_verified = True
-                # Confirm discrepancy from evidence
-                if issue.type == "duplicate_invoice":
-                    doc1, doc2 = ev_records[0], ev_records[1]
-                    assert doc1["entity_id"] == doc2["entity_id"]
-                    assert doc1["total_minor"] == doc2["total_minor"] == issue.expected_amount_minor
-                elif issue.type == "cutoff_error":
-                    inv_doc = ev_records[0]
-                    assert inv_doc["issued_at"][:10] > err_ep.manifest.period_end[:10]
-                    assert inv_doc["total_minor"] == issue.expected_amount_minor
-                elif issue.type == "unallocated_or_partial_payment":
-                    inv_doc = ev_records[0]
-                    pay_doc = ev_records[1]
-                    if inv_doc["currency"] == pay_doc["currency"]:
-                        shortfall = inv_doc["total_minor"] - pay_doc["amount_minor"]
-                        assert shortfall == issue.expected_amount_minor
-                    else:
-                        assert issue.currency == inv_doc["currency"]
-                        assert issue.expected_amount_minor > 0
-                elif issue.type == "wrong_fx_date_or_rate":
-                    inv_doc = ev_records[0]
-                    pay_doc = ev_records[1]
-                    assert inv_doc["currency"] != pay_doc["currency"]
-                break
+        invoices_by_id = {row["invoice_id"]: row for row in invoices}
+        payments_by_id = {row["payment_id"]: row for row in payments}
+        rates = {
+            (row["date"], row["source_currency"], row["target_currency"]): Decimal(row["rate"])
+            for row in fx_rows
+        }
+        policy = obs["policy_summary"]
 
-        assert evidence_set_verified, f"No complete acceptable evidence set found for issue {issue.issue_id}"
+        def rounded_minor(value: Decimal) -> int:
+            return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
+
+        def payment_amount_in_invoice_currency(payment: dict, invoice: dict) -> int:
+            if payment["currency"] == invoice["currency"]:
+                return payment["amount_minor"]
+            rate_date = (
+                invoice["issued_at"][:10]
+                if policy["fx_date_rule"] == "invoice_date"
+                else payment["timestamp"][:10]
+            )
+            if payment["currency"] == base_currency:
+                rate = rates[(rate_date, base_currency, invoice["currency"])]
+                return rounded_minor(Decimal(payment["amount_minor"]) / rate)
+            if invoice["currency"] == base_currency:
+                rate = rates[(rate_date, base_currency, payment["currency"])]
+                return rounded_minor(Decimal(payment["amount_minor"]) * rate)
+
+            payment_rate = rates[(rate_date, base_currency, payment["currency"])]
+            invoice_rate = rates[(rate_date, base_currency, invoice["currency"])]
+            return rounded_minor(
+                Decimal(payment["amount_minor"]) * payment_rate / invoice_rate
+            )
+
+        for issue in episode.truth_issues:
+            types_seen.add(issue.type)
+            for aid in issue.affected_ids:
+                if aid.startswith("INV-"):
+                    response, *_ = env.step({
+                        "tool": "get_record", "table": "invoices", "id": aid,
+                    })
+                    assert response["type"] == "get_record"
+                    assert response["record"]["invoice_id"] == aid
+                elif aid.startswith("PAY-"):
+                    response, *_ = env.step({
+                        "tool": "get_record", "table": "payments", "id": aid,
+                    })
+                    assert response["type"] == "get_record"
+                    assert response["record"]["payment_id"] == aid
+
+            assert issue.acceptable_evidence_sets
+            evidence_set_verified = False
+            for ev_set in issue.acceptable_evidence_sets:
+                ev_records = []
+                for evidence_id in ev_set:
+                    if evidence_id.startswith("DOC-"):
+                        response, *_ = env.step({
+                            "tool": "get_document", "doc_id": evidence_id,
+                        })
+                        if response.get("type") == "get_document" and response.get("document"):
+                            ev_records.append(response["document"])
+                    elif evidence_id.startswith("ROW-"):
+                        response, *_ = env.step({
+                            "tool": "get_record", "table": "ledger", "id": evidence_id,
+                        })
+                        if response.get("type") == "get_record" and response.get("record"):
+                            ev_records.append(response["record"])
+
+                if len(ev_records) == len(ev_set):
+                    evidence_set_verified = True
+                    if issue.type == "duplicate_invoice":
+                        doc1, doc2 = ev_records[0], ev_records[1]
+                        assert doc1["entity_id"] == doc2["entity_id"]
+                        assert doc1["total_minor"] == doc2["total_minor"] == issue.expected_amount_minor
+                    elif issue.type == "cutoff_error":
+                        inv_doc = ev_records[0]
+                        assert inv_doc["issued_at"][:10] > episode.manifest.period_end[:10]
+                        assert inv_doc["total_minor"] == issue.expected_amount_minor
+                    break
+            assert evidence_set_verified, (
+                f"No complete acceptable evidence set found for issue {issue.issue_id}"
+            )
+
+            if issue.type == "wrong_fx_date_or_rate":
+                invoice_id, payment_id = issue.affected_ids
+                invoice = invoices_by_id[invoice_id]
+                payment = payments_by_id[payment_id]
+                assert invoice["currency"] != payment["currency"] == base_currency
+                rate_date = (
+                    invoice["issued_at"][:10]
+                    if policy["fx_date_rule"] == "invoice_date"
+                    else payment["timestamp"][:10]
+                )
+                correct_rate = rates[(rate_date, base_currency, invoice["currency"])]
+                expected_payment_amount = rounded_minor(
+                    Decimal(invoice["total_minor"]) * correct_rate
+                )
+                assert expected_payment_amount != payment["amount_minor"]
+                calculated_discrepancy = abs(
+                    expected_payment_amount - payment["amount_minor"]
+                )
+                assert abs(
+                    calculated_discrepancy - issue.expected_amount_minor
+                ) <= episode.policy.amount_tolerance_minor
+
+            elif issue.type == "unallocated_or_partial_payment":
+                invoice_id = next(
+                    aid for aid in issue.affected_ids if aid in invoices_by_id
+                )
+                invoice = invoices_by_id[invoice_id]
+                affected_payments = [
+                    payments_by_id[aid]
+                    for aid in issue.affected_ids
+                    if aid in payments_by_id
+                ]
+                assert affected_payments
+                paid_amount = sum(
+                    payment_amount_in_invoice_currency(payment, invoice)
+                    for payment in affected_payments
+                )
+                calculated_shortfall = invoice["total_minor"] - paid_amount
+                assert abs(
+                    calculated_shortfall - issue.expected_amount_minor
+                ) <= episode.policy.amount_tolerance_minor
+                if any(payment["currency"] != invoice["currency"] for payment in affected_payments):
+                    verified_cross_currency_partial = True
 
     assert len(types_seen) >= 4, f"Expected all 4 types to be tested, got {types_seen}"
+    assert verified_cross_currency_partial, "Expected a cross-currency partial-payment case"
