@@ -83,7 +83,7 @@ def test_oracle_f1_equals_one_with_errors():
     """OraclePolicy must achieve F1 == 1.0 on an episode that has injected errors."""
     env = _make_env()
     ep = generate_episode(seed=0, config={"num_errors": 4})
-    traj = run_episode(env, OraclePolicy(), episode_data=ep)
+    traj = run_episode(env, OraclePolicy(ep.truth_issues), episode_data=ep)
 
     assert _f1(env) == pytest.approx(1.0), (
         f"Oracle F1={_f1(env):.4f}, eval={env.last_eval_result}"
@@ -102,7 +102,7 @@ def test_oracle_f1_equals_one_clean_episode():
     ep = generate_episode(seed=1, config={"num_errors": 0})
     # Clean episode: truth_issues is empty
     assert len(ep.truth_issues) == 0
-    traj = run_episode(env, OraclePolicy(), episode_data=ep)
+    traj = run_episode(env, OraclePolicy(ep.truth_issues), episode_data=ep)
 
     # F1 = 1.0 when both truth and findings are empty
     assert _f1(env) == pytest.approx(1.0)
@@ -159,3 +159,53 @@ def test_step_budget_respected(policy_cls, kwargs):
         f"{policy_cls.__name__} used {len(traj.steps)} steps (max 100)"
     )
     assert len(traj.steps) >= 1, "At least one step must be taken (submit)"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Test 9: Strict policy isolation contract
+# ─────────────────────────────────────────────────────────────────────
+
+def test_policy_isolation_contract():
+    """Spy policy verifies that run_episode passes ONLY a dict observation
+    without any references to env, truth_issues, provenance, or seed."""
+    env = _make_env(eval_mode=True)
+    ep = generate_episode(seed=42)
+
+    calls = []
+
+    class SpyPolicy:
+        def __init__(self):
+            self.step_idx = 0
+
+        def __call__(self, *args, **kwargs):
+            # Must be called with exactly 1 positional argument (obs) and no kwargs
+            assert len(args) == 1, f"Policy expected 1 argument (obs), got {len(args)}"
+            assert len(kwargs) == 0, f"Policy expected 0 kwargs, got {kwargs}"
+            obs = args[0]
+            assert isinstance(obs, dict), f"Observation must be dict, got {type(obs)}"
+
+            # Forbidden evaluator state must not leak into observation
+            assert "truth_issues" not in obs
+            assert "acceptable_evidence_sets" not in obs
+            assert "provenance" not in obs
+            assert "seed" not in obs
+            assert "env" not in obs
+
+            # Check that AuditEnv is not referenced anywhere in observation values
+            for val in obs.values():
+                assert not isinstance(val, AuditEnv)
+
+            calls.append(obs)
+            self.step_idx += 1
+
+            if self.step_idx == 1:
+                return {"tool": "list_records", "table": "invoices", "cursor": 0, "limit": 10}
+            elif self.step_idx == 2:
+                return {"tool": "calculator", "expression": "100 + 200"}
+            else:
+                ep_id = calls[0].get("manifest", {}).get("episode_id", "")
+                return {"tool": "submit", "findings": {"episode_id": ep_id, "findings": []}}
+
+    traj = run_episode(env, SpyPolicy(), episode_data=ep)
+    assert len(calls) == 3
+    assert len(traj.steps) == 3

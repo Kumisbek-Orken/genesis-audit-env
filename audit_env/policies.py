@@ -9,15 +9,16 @@ RandomPolicy(seed)         – random exploration + random/empty submit.
 WeakHeuristicPolicy()      – shallow first-page heuristic (errors on distractors).
 StrongBaselinePolicy()     – full rule-based deterministic auditor (all 4 error types,
                              correct distractor handling, ≤100 steps).
-OraclePolicy()             – upper-bound benchmark: reads truth_issues directly
-                             and achieves F1 == 1.0.
+OraclePolicy(truth_issues) – evaluator-side upper-bound benchmark: receives
+                             truth_issues in constructor and achieves F1 == 1.0.
 
 Unified interface
 -----------------
 run_episode(env, policy, *, seed, config, episode_data) -> Trajectory
 
-All policies are callable:  policy(obs, info, env) -> dict | None
-Returning None causes run_episode to submit empty findings immediately.
+All policies are callable with signature:  policy(obs: dict) -> dict | None
+Policies receive ONLY the observation dict on each step.
+Passing the environment or private ground truth into policies is prohibited.
 """
 
 from __future__ import annotations
@@ -26,11 +27,11 @@ import random as _random_module
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from audit_env.env import AuditEnv
 from audit_env.generator import EpisodeData
-from audit_env.schemas import VALID_ISSUE_TYPES
+from audit_env.schemas import VALID_ISSUE_TYPES, TruthIssue
 
 
 # =====================================================================
@@ -63,7 +64,7 @@ class Trajectory:
 # =====================================================================
 
 class _PolicyProtocol(Protocol):
-    def __call__(self, obs: dict, info: dict, env: AuditEnv) -> Optional[dict]: ...
+    def __call__(self, obs: dict) -> Optional[dict]: ...
 
 
 def run_episode(
@@ -76,12 +77,15 @@ def run_episode(
 ) -> Trajectory:
     """Drive a full episode with *policy* and return the trajectory.
 
+    Policies receive ONLY the observation dict. The environment object
+    and private evaluator truth are never passed into policy methods.
+
     Parameters
     ----------
     env : AuditEnv
         The environment (eval_mode may be True or False).
     policy : callable
-        ``policy(obs, info, env) -> action_dict | None``.
+        ``policy(obs) -> action_dict | None``.
         Returning None immediately submits empty findings.
     seed, config, episode_data
         Forwarded to ``env.reset()``.
@@ -92,7 +96,7 @@ def run_episode(
         Steps list, total_reward, final obs/info.
     """
     obs, info = env.reset(seed=seed, config=config, episode_data=episode_data)
-    episode_id: str = info.get("episode_id", "unknown")
+    episode_id: str = info.get("episode_id", obs.get("manifest", {}).get("episode_id", "unknown"))
     traj = Trajectory(episode_id=episode_id)
 
     terminated = False
@@ -100,7 +104,7 @@ def run_episode(
     reward = 0.0
 
     while not terminated and not truncated:
-        action = policy(obs, info, env)
+        action = policy(obs)
         if action is None:
             action = {
                 "tool": "submit",
@@ -146,20 +150,16 @@ class RandomPolicy:
         self._episode_id = ""
         self._tables = ("ledger", "invoices", "payments", "fx_rates")
 
-    # Called once per episode by run_episode / external loop
-    def _reset(self, info: dict, obs: dict) -> None:
+    def _reset(self, obs: dict) -> None:
         self._rng = _random_module.Random(self._init_seed + len(obs))
         self._explore_budget = self._rng.randint(1, 5)
         self._steps_done = 0
-        self._episode_id = info.get(
-            "episode_id",
-            obs.get("manifest", {}).get("episode_id", "unknown"),
-        )
+        self._episode_id = obs.get("manifest", {}).get("episode_id", "unknown")
 
-    def __call__(self, obs: dict, info: dict, env: AuditEnv) -> dict:
+    def __call__(self, obs: dict) -> dict:
         # First call: initialise
-        if self._rng is None or obs.get("type") is None:
-            self._reset(info, obs)
+        if self._rng is None or "manifest" in obs:
+            self._reset(obs)
 
         self._steps_done += 1
         remaining = obs.get("remaining_steps", 1)
@@ -190,7 +190,7 @@ class RandomPolicy:
             return {"tool": "calculator", "expression": f"{a} + {b}"}
 
     def _make_submit(self) -> dict:
-        rng = self._rng
+        rng = self._rng or _random_module.Random(self._init_seed)
         if rng.random() < 0.5:
             return {
                 "tool": "submit",
@@ -214,7 +214,6 @@ class RandomPolicy:
             "findings": {"episode_id": self._episode_id, "findings": findings},
         }
 
-    # Allow reuse across episodes: reset internal state
     def reset(self) -> None:
         self._rng = None
         self._steps_done = 0
@@ -244,12 +243,9 @@ class WeakHeuristicPolicy:
         self._invoices: list[dict] = []
         self._payments: list[dict] = []
 
-    def __call__(self, obs: dict, info: dict, env: AuditEnv) -> dict:
+    def __call__(self, obs: dict) -> dict:
         if self._phase == 0:
-            self._episode_id = info.get(
-                "episode_id",
-                obs.get("manifest", {}).get("episode_id", "unknown"),
-            )
+            self._episode_id = obs.get("manifest", {}).get("episode_id", "unknown")
             self._invoices = []
             self._payments = []
             self._phase = 1
@@ -345,20 +341,18 @@ class StrongBaselinePolicy:
     Strategy (guaranteed ≤ 100 steps):
       Phase 1 – Paginate ALL tables via list_records (50 rows/page).
                 invoices, payments, ledger, fx_rates.
-                Worst case: ~200 records each → 4 pages each → 16 steps.
-                Default generator target_docs=60 → ≤4 steps per table.
-      Phase 2 – single submit step.
-      Total: typically 8–20 steps, never >60 for the default config.
+      Phase 2 – Single submit step.
 
     Error detection:
-      A. duplicate_invoice   – same entity, amount, currency AND matching
-                               line-item signatures; skip recurring subscriptions
-                               (≥3 fully-paid invoices with ~monthly gaps).
-      B. unallocated_or_partial_payment – same-currency paid total < invoice
-                               total; skip cross-currency invoices (FX check)
-                               and invoices with matching refunds.
-      C. wrong_fx_date_or_rate – cross-currency payments; re-compute
-                               correct amount using fx_date_rule from policy_summary.
+      A. duplicate_invoice   – same entity, amount, currency AND line items
+                               issued close together (within 14 days); correctly
+                               distinguishes duplicate from ~30-day recurring bills.
+      B. unallocated_or_partial_payment – same-currency paid total < invoice total;
+                               skips credit notes (negative total_minor) without
+                               discarding all invoices of that entity.
+      C. wrong_fx_date_or_rate – cross-currency payments; re-computes
+                               expected amount using fx_date_rule with correct
+                               conversion direction (foreign/rate = base).
       D. cutoff_error        – invoice dated AFTER period_end appears in ledger.
     """
 
@@ -379,14 +373,11 @@ class StrongBaselinePolicy:
         self._tbl_idx: int = 0
         self._next_cursor: Optional[int] = 0
 
-    def __call__(self, obs: dict, info: dict, env: AuditEnv) -> dict:
+    def __call__(self, obs: dict) -> dict:
         # ── Initialisation ──────────────────────────────────────────
         if self._phase == "init":
-            self._episode_id = info.get(
-                "episode_id",
-                obs.get("manifest", {}).get("episode_id", "unknown"),
-            )
             self._manifest = obs.get("manifest", {})
+            self._episode_id = self._manifest.get("episode_id", "unknown")
             self._policy_summary = obs.get("policy_summary", {})
             self._invoices = []
             self._payments = []
@@ -510,49 +501,37 @@ class StrongBaselinePolicy:
             for sig, invs in sig_groups.items():
                 if len(invs) < 2:
                     continue
-                if self._is_recurring(invs):
-                    continue
-                # Report all pairs (but cap total findings later)
-                for i in range(len(invs)):
-                    for j in range(i + 1, len(invs)):
-                        a, b = invs[i], invs[j]
-                        findings.append({
-                            "type": "duplicate_invoice",
-                            "affected_ids": [a["invoice_id"], b["invoice_id"]],
-                            "claimed_amount_minor": a["total_minor"],
-                            "currency": a["currency"],
-                            "evidence_ids": [a["doc_id"], b["doc_id"]],
-                            "explanation": (
-                                f"Duplicate: {a['invoice_id']} and {b['invoice_id']} "
-                                f"same entity/amount/currency/line-items"
-                            ),
-                        })
 
-    def _is_recurring(self, invs: list[dict]) -> bool:
-        """True when ≥3 same-amount invoices are ~monthly spaced AND fully paid."""
-        if len(invs) < 3:
-            return False
+                # Sort chronologically to pair closest duplicates and skip recurring monthly series
+                sorted_invs = sorted(invs, key=lambda x: x["issued_at"])
+                used_indices: set[int] = set()
 
-        # Build paid-per-invoice map
-        paid_per: dict[str, int] = {}
-        for pay in self._payments:
-            for ref in pay.get("invoice_refs", []):
-                paid_per.setdefault(ref, 0)
-                paid_per[ref] += pay.get("amount_minor", 0)
-
-        fully_paid = all(
-            paid_per.get(inv["invoice_id"], 0) >= inv["total_minor"]
-            for inv in invs
-        )
-        if not fully_paid:
-            return False
-
-        dates = sorted(inv["issued_at"][:10] for inv in invs)
-        gaps = [
-            (date.fromisoformat(dates[i]) - date.fromisoformat(dates[i - 1])).days
-            for i in range(1, len(dates))
-        ]
-        return all(20 <= g <= 42 for g in gaps)
+                for i in range(len(sorted_invs)):
+                    if i in used_indices:
+                        continue
+                    d_i = date.fromisoformat(sorted_invs[i]["issued_at"][:10])
+                    for j in range(i + 1, len(sorted_invs)):
+                        if j in used_indices:
+                            continue
+                        d_j = date.fromisoformat(sorted_invs[j]["issued_at"][:10])
+                        gap = (d_j - d_i).days
+                        # Duplicate invoices generated with 1-3 days gap; recurring series have >= 25 days gap
+                        if gap <= 14:
+                            a, b = sorted_invs[i], sorted_invs[j]
+                            findings.append({
+                                "type": "duplicate_invoice",
+                                "affected_ids": [a["invoice_id"], b["invoice_id"]],
+                                "claimed_amount_minor": a["total_minor"],
+                                "currency": a["currency"],
+                                "evidence_ids": [a["doc_id"], b["doc_id"]],
+                                "explanation": (
+                                    f"Duplicate: {a['invoice_id']} and {b['invoice_id']} "
+                                    f"same entity/amount/currency/line-items within {gap} days"
+                                ),
+                            })
+                            used_indices.add(i)
+                            used_indices.add(j)
+                            break
 
     # ── B: payment allocation ────────────────────────────────────────
 
@@ -568,13 +547,6 @@ class StrongBaselinePolicy:
                 inv = inv_by_id.get(ref)
                 if inv and pay["currency"] != inv["currency"]:
                     cross_currency_invs.add(ref)
-
-        # Build refund set: entities with negative-total invoices
-        refund_entities: set[str] = {
-            inv["entity_id"]
-            for inv in self._invoices
-            if inv.get("total_minor", 0) < 0
-        }
 
         # Accumulate same-currency payments per invoice_id
         paid: dict[str, int] = {}
@@ -593,12 +565,9 @@ class StrongBaselinePolicy:
                 pay_ids_map.setdefault(ref, []).append(pay["payment_id"])
 
         for inv_id, inv in inv_by_id.items():
-            if inv["total_minor"] <= 0:
-                continue
+            if inv.get("total_minor", 0) <= 0:
+                continue  # skip the return invoice / credit note itself
             if inv_id in cross_currency_invs:
-                continue
-            # Skip if entity has refunds (legitimate credit note scenario)
-            if inv["entity_id"] in refund_entities:
                 continue
 
             total_paid = paid.get(inv_id, 0)
@@ -636,7 +605,7 @@ class StrongBaselinePolicy:
         if r is not None:
             return r
         r = fx_lookup.get((dt, foreign, base))
-        if r is not None:
+        if r is not None and r > 0:
             return Decimal("1") / r
         return None
 
@@ -664,15 +633,32 @@ class StrongBaselinePolicy:
                     else inv["issued_at"][:10]
                 )
 
-                rate = self._get_rate(fx_lookup, fx_date, base_ccy, inv["currency"])
-                if rate is None:
+                # The fx table stores rate from base_currency -> foreign_currency (e.g. USD -> KZT = 450)
+                if inv["currency"] != base_ccy and pay["currency"] == base_ccy:
+                    foreign_ccy = inv["currency"]
+                    rate = self._get_rate(fx_lookup, fx_date, base_ccy, foreign_ccy)
+                    if rate is None or rate == 0:
+                        continue
+                    # To convert foreign invoice amount to base payment currency, divide by rate
+                    expected = int(
+                        (Decimal(inv["total_minor"]) / rate).quantize(
+                            Decimal("1"), rounding=ROUND_HALF_EVEN
+                        )
+                    )
+                elif inv["currency"] == base_ccy and pay["currency"] != base_ccy:
+                    foreign_ccy = pay["currency"]
+                    rate = self._get_rate(fx_lookup, fx_date, base_ccy, foreign_ccy)
+                    if rate is None:
+                        continue
+                    # To convert base invoice amount to foreign payment currency, multiply by rate
+                    expected = int(
+                        (Decimal(inv["total_minor"]) * rate).quantize(
+                            Decimal("1"), rounding=ROUND_HALF_EVEN
+                        )
+                    )
+                else:
                     continue
 
-                expected = int(
-                    (Decimal(inv["total_minor"]) * rate).quantize(
-                        Decimal("1"), rounding=ROUND_HALF_EVEN
-                    )
-                )
                 discrepancy = abs(pay["amount_minor"] - expected)
                 if discrepancy > tolerance:
                     findings.append({
@@ -738,20 +724,20 @@ class StrongBaselinePolicy:
 # =====================================================================
 
 class OraclePolicy:
-    """Upper-bound benchmark.
+    """Evaluator-side oracle benchmark.
 
-    Reads ``env._episode.truth_issues`` directly (closed data) and
-    submits a perfect answer on the very first step, achieving F1 == 1.0.
-
-    Not a valid auditing agent — it exists solely to verify the scorer.
+    Receives ground truth issues in constructor and submits them
+    on the first step.
     """
 
-    def __call__(self, obs: dict, info: dict, env: AuditEnv) -> dict:
-        ep = env._episode
-        episode_id = ep.manifest.episode_id
+    def __init__(self, truth_issues: Sequence[TruthIssue] = ()) -> None:
+        self._truth_issues = list(truth_issues)
+
+    def __call__(self, obs: dict) -> dict:
+        ep_id = obs.get("manifest", {}).get("episode_id", "")
 
         findings: list[dict] = []
-        for issue in ep.truth_issues:
+        for issue in self._truth_issues:
             evidence = (
                 list(issue.acceptable_evidence_sets[0])
                 if issue.acceptable_evidence_sets
@@ -768,5 +754,5 @@ class OraclePolicy:
 
         return {
             "tool": "submit",
-            "findings": {"episode_id": episode_id, "findings": findings},
+            "findings": {"episode_id": ep_id, "findings": findings},
         }

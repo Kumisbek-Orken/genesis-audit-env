@@ -169,22 +169,50 @@ def evaluate_submission(
             ),
         }
 
-    # ── 3. Greedy 1-to-1 matching ────────────────────────────────────
+    # ── 3. Maximum bipartite matching (Kuhn's algorithm) ─────────────
     findings = list(submission.findings)
     tolerance = policy.amount_tolerance_minor
-    matched_finding_indices: set[int] = set()
-    matches: list[tuple[str, int]] = []  # (truth.issue_id, finding_index)
-    tp = 0
+    n_left = len(truth_issues)
+    n_right = len(findings)
 
+    # Build deterministic adjacency list (findings ordered by submission index)
+    adj: list[list[int]] = []
     for truth in truth_issues:
-        for idx, finding in enumerate(findings):
-            if idx in matched_finding_indices:
+        candidates = [
+            v for v, f in enumerate(findings)
+            if _finding_matches_truth(f, truth, tolerance)
+        ]
+        adj.append(candidates)
+
+    # match_right[v] stores the left vertex u matched to right vertex v, or -1
+    match_right = [-1] * n_right
+
+    def dfs(u: int, visited: list[bool]) -> bool:
+        for v in adj[u]:
+            if visited[v]:
                 continue
-            if _finding_matches_truth(finding, truth, tolerance):
-                matched_finding_indices.add(idx)
-                matches.append((truth.issue_id, idx))
-                tp += 1
-                break  # move to next truth issue
+            visited[v] = True
+            if match_right[v] < 0 or dfs(match_right[v], visited):
+                match_right[v] = u
+                return True
+        return False
+
+    for u in range(n_left):
+        visited = [False] * n_right
+        dfs(u, visited)
+
+    # Reconstruct matching in truth_issues order
+    match_left = [-1] * n_left
+    for v, u in enumerate(match_right):
+        if u >= 0:
+            match_left[u] = v
+
+    matches: list[tuple[str, int]] = []
+    tp = 0
+    for u in range(n_left):
+        if match_left[u] >= 0:
+            matches.append((truth_issues[u].issue_id, match_left[u]))
+            tp += 1
 
     fp = len(findings) - tp
     fn = len(truth_issues) - tp

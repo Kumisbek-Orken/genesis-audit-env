@@ -652,6 +652,39 @@ class TestMultiIssueMatching:
         assert result["tp"] == 2
         assert result["matches"] == [("ISS-1", 1), ("ISS-2", 0)]
 
+    def test_conflicting_candidates_maximum_matching(self):
+        """Kuhn's matching resolves ambiguous conflicts to achieve maximum TP.
+
+        T1 can match either F1 or F2.
+        T2 can only match F1.
+        Naive greedy in order [T1, T2] would take F1 for T1, leaving T2 unmatched (TP=1).
+        Kuhn's algorithm reassigns T1 to F2 and gives F1 to T2, achieving TP=2.
+        """
+        # Both truth issues have same type, affected_ids, currency, but different tolerances/amounts
+        t1 = _truth(issue_id="ISS-1", affected_ids=("INV-1",), expected_amount=100, evidence_sets=(("E1",),))
+        t2 = _truth(issue_id="ISS-2", affected_ids=("INV-1",), expected_amount=130, evidence_sets=(("E1",),))
+
+        # f1 has amount 125 (within policy tolerance of 30 for both: |125-100|=25 <= 30, |125-130|=5 <= 30)
+        # f2 has amount 80 (|80-100|=20 <= 30, but |80-130|=50 > 30, so matches only T1)
+        f1 = _finding_dict(affected_ids=["INV-1"], claimed_amount=125, evidence_ids=["E1"])
+        f2 = _finding_dict(affected_ids=["INV-1"], claimed_amount=80, evidence_ids=["E1"])
+
+        policy = _policy(tolerance=30)
+
+        # Submission presents [f1, f2] in that order
+        result = evaluate_submission(
+            _submission(findings=[f1, f2]),
+            [t1, t2],
+            policy,
+            inspection_steps=0,
+        )
+
+        assert result["tp"] == 2
+        assert result["fp"] == 0
+        assert result["fn"] == 0
+        assert result["f1"] == 1.0
+        assert set(result["matches"]) == {("ISS-1", 1), ("ISS-2", 0)}
+
 
 # ===================================================================
 # 13. Reward formula correctness

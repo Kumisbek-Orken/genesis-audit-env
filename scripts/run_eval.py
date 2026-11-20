@@ -127,11 +127,11 @@ def evaluate_episodes(
     eval_mode: bool = True,
 ) -> list[dict[str, Any]]:
     """Run all 4 policies over *episode_entries* and write trajectories to *out_file*."""
-    policy_specs: list[tuple[str, Callable[[int], Any]]] = [
-        ("RandomPolicy", lambda ep_idx: RandomPolicy(seed=seed + ep_idx)),
-        ("WeakHeuristicPolicy", lambda _ep_idx: WeakHeuristicPolicy()),
-        ("StrongBaselinePolicy", lambda _ep_idx: StrongBaselinePolicy()),
-        ("OraclePolicy", lambda _ep_idx: OraclePolicy()),
+    policy_specs: list[tuple[str, Callable[[int, EpisodeData], Any]]] = [
+        ("RandomPolicy", lambda ep_idx, _ep: RandomPolicy(seed=seed + ep_idx)),
+        ("WeakHeuristicPolicy", lambda _ep_idx, _ep: WeakHeuristicPolicy()),
+        ("StrongBaselinePolicy", lambda _ep_idx, _ep: StrongBaselinePolicy()),
+        ("OraclePolicy", lambda _ep_idx, ep: OraclePolicy(ep.truth_issues)),
     ]
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ def evaluate_episodes(
         for ep_idx, (ep_dir, ep_data) in enumerate(episode_entries):
             for policy_name, policy_factory in policy_specs:
                 env = AuditEnv(eval_mode=eval_mode)
-                policy = policy_factory(ep_idx)
+                policy = policy_factory(ep_idx, ep_data)
 
                 t0 = time.perf_counter()
                 traj = run_episode(env, policy, episode_data=ep_data)
